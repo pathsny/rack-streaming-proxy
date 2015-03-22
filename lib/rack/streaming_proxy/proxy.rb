@@ -2,7 +2,7 @@ require 'rack'
 require 'logger'
 require 'rack/streaming_proxy/session'
 require 'rack/streaming_proxy/request'
-require 'rack/streaming_proxy/response'
+require 'thread'
 
 class Rack::StreamingProxy::Proxy
 
@@ -68,36 +68,34 @@ class Rack::StreamingProxy::Proxy
 
       request  = Rack::StreamingProxy::Request.new(destination_uri, current_request)
       begin
-        response = Rack::StreamingProxy::Session.new(request).start
+        http_session = Net::HTTP.new(request.host, request.port)
+        http_session.use_ssl = request.use_ssl?
+        env['rack.hijack'].call
+        io = env['rack.hijack_io']
+        Thread.new {
+          http_session.start do |session|
+              socket, io = nil
+              begin
+                req = request.http_request
+                session.send(:begin_transport, req)
+                socket = session.instance_variable_get(:@socket)
+                req.exec socket, Net::HTTP::HTTPVersion, req.path
+                catch(:response) {
+                  env['rack.hijack'].call
+                  io = env['rack.hijack_io']
+                  IO.copy_stream(socket.io, io)
+                }  
+            rescue Exception => e
+              puts e
+              socket.close if socket and not socket.closed?
+              io.close if io and not io.closed?
+            end  
+          end
+        }
       rescue Exception => e # Rescuing only for the purpose of logging to rack.errors
         log_rack_error(env, e)
         raise e
       end
-
-      # Notify client http version to the instance of Response class.
-      response.client_http_version = env['HTTP_VERSION'].sub(/HTTP\//, '') if env.has_key?('HTTP_VERSION')
-      # Ideally, both a Content-Length header field and a Transfer-Encoding 
-      # header field are not expected to be present from servers which 
-      # are compliant with RFC2616. However, irresponsible servers may send 
-      # both to rack-streaming-proxy.
-      # RFC2616 says if a message is received with both a Transfer-Encoding 
-      # header field and a Content-Length header field, the latter MUST be 
-      # ignored. So I deleted a Content-Length header here.
-      #
-      # Though there is a case that rack-streaming-proxy deletes both a 
-      # Content-Length and a Transfer-Encoding, a client can acknowledge the 
-      # end of body by closing the connection when the entire response has 
-      # been sent without a Content-Length header. So a Content-Length header 
-      # does not have to be required here in our understaing.
-      response.headers.delete('Content-Length') if response.headers.has_key?('Transfer-Encoding')
-      if env.has_key?('HTTP_VERSION') && env['HTTP_VERSION'] < 'HTTP/1.1'
-        # Be compliant with RFC2146
-        response.headers.delete('Transfer-Encoding')
-      end
-
-      self.class.log :info, "Finishing proxy request to: #{destination_uri}"
-      [response.status, response.headers, response]
-
     # Continue down the middleware stack if the request is not to be proxied.
     else
       @app.call(env)
