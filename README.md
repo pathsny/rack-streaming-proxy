@@ -1,3 +1,6 @@
+# Fork of Original Repo using rack_hijack
+Since rack-streaming-proxy currently does not work with puma, this uses a different approach to achieve the same result. It uses rack_hijack to grab the socket and simply stream all the data from the http client to the rack_hijack_io socket.
+
 # Rack::StreamingProxy
 
 A transparent streaming proxy to be used as rack middleware.
@@ -71,7 +74,6 @@ Or install it yourself as:
 
 * Ruby = 1.9.3
 * rack >= 1.4
-* servolux ~> 0.10
 
 These requirements (other than Ruby) will be automatically installed via Bundler.
 
